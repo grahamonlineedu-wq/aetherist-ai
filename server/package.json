@@ -1,0 +1,16 @@
+{
+  "name": "aetherist-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "jspdf": "^2.5.2",
+    "socket.io": "^4.8.3"
+  }
+}

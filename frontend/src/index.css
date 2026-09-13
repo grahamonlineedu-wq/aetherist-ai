@@ -1,0 +1,47 @@
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  color-scheme: dark;
+}
+
+body {
+  background-color: #080914;
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+
+/* Custom functional styles matching image aesthetics */
+.btn-primary-glow {
+  background: linear-gradient(135deg, #c026d3 0%, #db2777 100%);
+  color: white;
+  border: none;
+  font-weight: 600;
+  transition: opacity 0.2s ease;
+}
+
+.btn-primary-glow:hover {
+  opacity: 0.9;
+  cursor: pointer;
+}
+
+.btn-outline-custom {
+  background: transparent;
+  color: #a78bfa;
+  border: 1px solid #4c1d95;
+}
+
+.btn-outline-custom:hover {
+  background: #1e1b4b;
+  cursor: pointer;
+}
+
+.speaker-card {
+  background: #111322;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+}
+
+.agenda-card-empty {
+  background: #0f111a;
+  border: 1px dashed #334155;
+  border-radius: 12px;
+}
