@@ -51,6 +51,22 @@ export default function App() {
     mediaRecorderRef.current = null;
   }
 
+  const sendTranscriptToBackend = async (text, speaker = activeSpeaker, topic = activeTopic) => {
+    if (!text || !text.trim()) return;
+    const response = await fetch(`${API_BASE_URL}/api/refine-speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawText: `${speaker}: ${text}` }),
+    });
+    const result = await response.json();
+    if (result?.success) {
+      setMessage(`Transcript processed: ${result.data?.title || 'Meeting summary ready'}`);
+    }
+    if (socketRef.current?.connected) {
+      socketRef.current.emit('transcript', { text, speaker, topic });
+    }
+  };
+
   const toggleRecording = async () => {
     if (isRecording) {
       stopCapture();
@@ -89,8 +105,8 @@ export default function App() {
           for (let i = event.resultIndex; i < event.results.length; i += 1) {
             if (!event.results[i].isFinal) continue;
             const text = event.results[i][0].transcript.trim();
-            if (text && socketRef.current?.connected) {
-              socketRef.current.emit('transcript', { text, speaker: activeSpeaker, topic: activeTopic });
+            if (text) {
+              sendTranscriptToBackend(text, activeSpeaker, activeTopic);
             }
           }
         };
@@ -112,7 +128,8 @@ export default function App() {
     try {
       setMessage('Compiling PDF…');
       const response = await fetch(`${API_BASE_URL}/api/export-pdf`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Aetherist AI - Meeting Minutes', topics: transcriptData }),
       });
       const data = await response.json();
@@ -137,7 +154,7 @@ export default function App() {
       <header className="app-header"><div><h1>Aetherist AI</h1><p>Autonomous Meeting Secretary</p></div><span className={`connection-status ${connectionState}`}>{connectionState}</span></header>
       <nav className="toolbar">
         <button onClick={() => setActiveViewTab(activeViewTab === 'history' ? 'session' : 'history')}>📚 {activeViewTab === 'history' ? 'Workspace' : 'History'}</button>
-        <button onClick={handleDownloadPDF}>📥 Export PDF</button>
+        <button onClick={handleDownloadPDF}>���� Export PDF</button>
         <button onClick={toggleRecording}>{isRecording ? '🛑 Stop' : '🎙️ Start'}</button>
       </nav>
       {message && <p role="status" className="status-message">{message}</p>}
