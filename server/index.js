@@ -62,13 +62,10 @@ function addLiveTranscript(tab, text, speaker = 'System') {
 io.on('connection', (socket) => {
   socket.emit('live-transcript-update', { topics: liveTopics });
 
-  // Browser speech recognition emits text, not raw PCM audio. This keeps the
-  // app working without a Deepgram/WebRTC pipeline in the repo.
   socket.on('transcript', (data = {}) => {
     addLiveTranscript(data.topic, data.text, data.speaker);
   });
 
-  // Kept for compatibility with older clients that still send recorder chunks.
   socket.on('audio-stream-chunk', () => {});
 });
 
