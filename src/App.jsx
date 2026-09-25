@@ -7,6 +7,15 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const SPEAKERS = ['Sarah Jenkins', 'David Chen', 'Elena Rosto'];
 const EMPTY_TOPICS = { Overview: [], Technical: [], Minutes: [] };
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 export default function App() {
   const [view, setView] = useState('session');
   const [topic, setTopic] = useState('Overview');
@@ -17,13 +26,10 @@ export default function App() {
   const [connection, setConnection] = useState('connecting');
   const [message, setMessage] = useState('');
   const socketRef = useRef(null);
-  const recognitionRef = useRef(null);
+  const recorderRef = useRef(null);
   const streamRef = useRef(null);
-  const recordingRef = useRef(false);
-
-  useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
+  const chunksRef = useRef([]);
+  const recordingContextRef = useRef({ speaker: SPEAKERS[0], topic: 'Overview' });
 
   useEffect(() => {
     const socket = io(API_BASE_URL, { transports: ['websocket', 'polling'] });
@@ -31,14 +37,9 @@ export default function App() {
     socket.on('connect', () => setConnection('connected'));
     socket.on('disconnect', () => setConnection('disconnected'));
     socket.on('connect_error', () => setConnection('disconnected'));
-    socket.on('live-transcript-update', (data) => {
-      if (data?.topics) setTopics(data.topics);
-    });
+    socket.on('live-transcript-update', (data) => data?.topics && setTopics(data.topics));
 
-    Promise.all([
-      fetch(`${API_BASE_URL}/api/session`),
-      fetch(`${API_BASE_URL}/api/history`),
-    ]).then(async ([sessionResponse, historyResponse]) => {
+    Promise.all([fetch(`${API_BASE_URL}/api/session`), fetch(`${API_BASE_URL}/api/history`)]).then(async ([sessionResponse, historyResponse]) => {
       if (!sessionResponse.ok || !historyResponse.ok) throw new Error('Backend unavailable');
       const session = await sessionResponse.json();
       const historyData = await historyResponse.json();
@@ -47,38 +48,51 @@ export default function App() {
     }).catch((error) => setMessage(`Backend connection failed: ${error.message}`));
 
     return () => {
-      recordingRef.current = false;
-      recognitionRef.current?.stop();
+      recorderRef.current?.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       socket.disconnect();
     };
   }, []);
 
-  const sendTranscript = async (text) => {
-    const cleanText = text.trim();
-    if (!cleanText) return;
-    if (!socketRef.current?.connected) {
-      setMessage('Transcript not sent: backend is disconnected.');
-      return;
-    }
-    socketRef.current.emit('transcript', { text: cleanText, speaker, topic });
+  const refineTranscript = async (text, context) => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/refine-speech`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: `${speaker}: ${cleanText}` }),
+        body: JSON.stringify({ rawText: `${context.speaker}: ${text}` }),
       });
       const result = await response.json();
-      if (result.success) setMessage(`Captured: ${result.data.title}`);
+      if (result.success) setMessage(`Article ready: ${result.data.title}`);
     } catch {
-      setMessage('Transcript captured, but article refinement is unavailable.');
+      setMessage('Transcript saved, but article refinement is unavailable.');
+    }
+  };
+
+  const transcribeRecording = async (blob, context) => {
+    try {
+      setMessage('Uploading audio to Deepgram...');
+      const audio = await blobToDataUrl(blob);
+      const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio, mimeType: blob.type || 'audio/webm', topic: context.topic, speaker: context.speaker }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Transcription failed');
+      if (!result.text) {
+        setMessage('Audio was received, but no speech was detected.');
+        return;
+      }
+      setMessage(`Deepgram transcript received (${result.provider}).`);
+      await refineTranscript(result.text, context);
+    } catch (error) {
+      setMessage(`Transcription failed: ${error.message}`);
     }
   };
 
   const stopRecording = () => {
-    recordingRef.current = false;
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
+    if (!recorderRef.current) return;
+    recorderRef.current.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setRecording(false);
@@ -89,54 +103,41 @@ export default function App() {
       setMessage('Microphone requires HTTPS or localhost.');
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMessage('This browser does not support microphone access.');
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setMessage('This browser does not support audio recording. Try current Chrome or Edge.');
       return;
     }
 
     try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        setRecording(true);
-        setMessage('Microphone is active, but speech recognition is unavailable in this browser.');
-        return;
-      }
-
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = false;
-      recognition.lang = navigator.language || 'en-US';
-      recognition.onresult = (event) => {
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          if (event.results[index].isFinal) sendTranscript(event.results[index][0].transcript);
-        }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordingContextRef.current = { speaker, topic };
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunksRef.current.push(event.data);
       };
-      recognition.onerror = (event) => setMessage(`Speech recognition: ${event.error}`);
-      recognition.onend = () => {
-        if (recordingRef.current) {
-          try { recognition.start(); } catch { /* recognition is already restarting */ }
-        }
+      recorder.onstop = async () => {
+        const context = recordingContextRef.current;
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        chunksRef.current = [];
+        recorderRef.current = null;
+        if (blob.size) await transcribeRecording(blob, context);
       };
-      recognitionRef.current = recognition;
-      recognition.start();
+      recorderRef.current = recorder;
+      streamRef.current = stream;
+      recorder.start(1000);
       setRecording(true);
-      setMessage('Microphone is active. Speak normally.');
+      setMessage('Recording meeting audio... press Stop to transcribe with Deepgram.');
     } catch (error) {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
       setMessage(`Microphone permission failed: ${error.name || error.message}`);
     }
   };
-
-  const toggleRecording = () => (recording ? stopRecording() : startRecording());
 
   const exportPdf = async () => {
     try {
       setMessage('Preparing PDF...');
       const response = await fetch(`${API_BASE_URL}/api/export-pdf`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Aetherist AI - Meeting Minutes', topics }),
       });
       const data = await response.json();
@@ -157,27 +158,19 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <div><h1>Aetherist AI</h1><p>Autonomous Meeting Secretary</p></div>
-        <span className={`connection-status ${connection}`}>{connection}</span>
-      </header>
+      <header className="app-header"><div><h1>Aetherist AI</h1><p>Autonomous Meeting Secretary</p></div><span className={`connection-status ${connection}`}>{connection}</span></header>
       <nav className="toolbar" aria-label="Meeting controls">
         <button type="button" onClick={() => setView(view === 'history' ? 'session' : 'history')}>{view === 'history' ? 'Workspace' : 'History'}</button>
         <button type="button" onClick={exportPdf}>Export PDF</button>
-        <button type="button" className={recording ? 'danger-button' : 'primary-button'} onClick={toggleRecording}>{recording ? 'Stop microphone' : 'Start microphone'}</button>
+        <button type="button" className={recording ? 'danger-button' : 'primary-button'} onClick={recording ? stopRecording : startRecording}>{recording ? 'Stop and transcribe' : 'Record meeting'}</button>
       </nav>
       {message && <p className="status-message" role="status">{message}</p>}
-
-      {view === 'history' ? (
-        <section className="history-list"><h2>Meeting history</h2>{history.length ? history.map((item) => <AgendaCard key={item.id} topic={{ ...item, items: (item.highlights || []).map((text) => ({ speaker: 'Highlight', text })) }} />) : <p className="empty-state">No meeting history yet.</p>}</section>
-      ) : (
-        <>
-          <section className="panel speaker-panel"><h2>Speaker environment</h2><div className="speaker-buttons">{SPEAKERS.map((name) => <button type="button" key={name} className={speaker === name ? 'selected' : ''} onClick={() => setSpeaker(name)} aria-pressed={speaker === name}>{name}</button>)}</div></section>
-          <section className="topic-tabs" aria-label="Transcript topics">{Object.keys(EMPTY_TOPICS).map((name) => <button type="button" key={name} className={topic === name ? 'selected' : ''} onClick={() => setTopic(name)} aria-pressed={topic === name}>{name}</button>)}</section>
-          <LiveTranscript topic={topic} entries={topics[topic] || []} />
-          <section className="agenda-list">{agenda.map((item) => <AgendaCard key={item.id} topic={item} />)}</section>
-        </>
-      )}
+      {view === 'history' ? <section className="history-list"><h2>Meeting history</h2>{history.length ? history.map((item) => <AgendaCard key={item.id} topic={{ ...item, items: (item.highlights || []).map((text) => ({ speaker: 'Highlight', text })) }} />) : <p className="empty-state">No meeting history yet.</p>}</section> : <>
+        <section className="panel speaker-panel"><h2>Speaker environment</h2><div className="speaker-buttons">{SPEAKERS.map((name) => <button type="button" key={name} className={speaker === name ? 'selected' : ''} onClick={() => setSpeaker(name)} aria-pressed={speaker === name}>{name}</button>)}</div></section>
+        <section className="topic-tabs" aria-label="Transcript topics">{Object.keys(EMPTY_TOPICS).map((name) => <button type="button" key={name} className={topic === name ? 'selected' : ''} onClick={() => setTopic(name)} aria-pressed={topic === name}>{name}</button>)}</section>
+        <LiveTranscript topic={topic} entries={topics[topic] || []} />
+        <section className="agenda-list">{agenda.map((item) => <AgendaCard key={item.id} topic={item} />)}</section>
+      </>}
     </main>
   );
 }
