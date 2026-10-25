@@ -6,21 +6,51 @@ import { jsPDF } from 'jspdf';
 import dotenv from 'dotenv';
 import { createClient } from '@deepgram/sdk';
 import OpenAI from 'openai';
+import path from 'path';
+import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const buildDirectory = path.join(projectRoot, 'dist');
+const serveBuiltApp = process.env.NODE_ENV === 'production' && existsSync(buildDirectory);
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  ...(process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
+const io = new Server(httpServer, {
+  cors: { origin: [...new Set(allowedOrigins)], methods: ['GET', 'POST'] },
+});
 
-app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST'],
+}));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '50mb' }));
+if (serveBuiltApp) app.use(express.static(buildDirectory, { index: false }));
 
 const liveTopics = {
-  Overview: [{ speaker: 'Sarah Jenkins', time: '10:00 AM', text: 'Welcome everyone to the project overview alignment.' }],
+  Overview: [],
   Technical: [],
   Minutes: [],
 };
+
+const defaultSpeakerSettings = [
+  { id: 'sarah', name: 'Sarah', gain: 80, suppression: 90 },
+  { id: 'david', name: 'David', gain: 100, suppression: 83 },
+  { id: 'elena', name: 'Elena', gain: 100, suppression: 120 },
+];
+let speakerSettings = defaultSpeakerSettings.map((speaker) => ({ ...speaker }));
 
 const meetingHistoryLog = [
   { id: 'hist-001', date: 'Sept 10, 2026', title: 'Q3 Strategy Planning Sprint', duration: '42 mins', summary: 'Finalized production deployment maps and closed budget allocation approvals.', highlights: ['Sarah: Approved cloud hosting tier', 'David: Scaled streaming cluster targets'] },
@@ -30,7 +60,9 @@ const meetingHistoryLog = [
 const deepgram = process.env.DEEPGRAM_API_KEY ? createClient(process.env.DEEPGRAM_API_KEY) : null;
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
-const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+const normalizeText = (value) => (
+  typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+);
 
 function fallbackSummary(rawText) {
   const text = normalizeText(rawText);
@@ -59,30 +91,104 @@ async function refineSpeech(rawText) {
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, providers: { deepgram: Boolean(deepgram), openai: Boolean(openai) } }));
-app.get('/api/session', (_req, res) => res.json({ topics: liveTopics }));
+app.get('/api/session', (_req, res) => res.json({ topics: liveTopics, speakers: speakerSettings }));
 app.get('/api/history', (_req, res) => res.json({ history: meetingHistoryLog }));
+app.get('/api/speakers', (_req, res) => res.json({ speakers: speakerSettings }));
+
+app.post('/api/speakers', (req, res) => {
+  const submittedSpeakers = req.body?.speakers;
+  if (!Array.isArray(submittedSpeakers) || submittedSpeakers.length !== defaultSpeakerSettings.length) {
+    return res.status(400).json({ success: false, error: 'speakers must contain Sarah, David, and Elena.' });
+  }
+
+  const settingsById = new Map();
+  for (const item of submittedSpeakers) {
+    const preset = defaultSpeakerSettings.find((speaker) => speaker.id === item?.id);
+    const gain = Number(item?.gain);
+    const suppression = Number(item?.suppression);
+    if (
+      !preset ||
+      settingsById.has(preset.id) ||
+      !Number.isInteger(gain) ||
+      gain < 0 ||
+      gain > 100 ||
+      !Number.isInteger(suppression) ||
+      suppression < 0 ||
+      suppression > 120
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Each speaker needs a valid ID, gain from 0 to 100, and suppression from 0 to 120.',
+      });
+    }
+    settingsById.set(preset.id, { ...preset, gain, suppression });
+  }
+
+  if (settingsById.size !== defaultSpeakerSettings.length) {
+    return res.status(400).json({ success: false, error: 'All three speaker profiles are required.' });
+  }
+
+  speakerSettings = defaultSpeakerSettings.map((speaker) => settingsById.get(speaker.id));
+  io.emit('speaker-settings-update', { speakers: speakerSettings });
+  return res.json({ success: true, speakers: speakerSettings });
+});
 
 function addLiveTranscript(tab, text, speaker = 'System') {
   const topic = liveTopics[tab] ? tab : 'Overview';
   const cleanText = normalizeText(text);
   if (!cleanText) return null;
-  const item = { speaker: String(speaker || 'Unknown speaker'), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), text: cleanText };
+  const cleanSpeaker = typeof speaker === 'string' ? normalizeText(speaker).slice(0, 100) : '';
+  const item = {
+    speaker: cleanSpeaker || 'Unknown speaker',
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    text: cleanText.slice(0, 5000),
+  };
   liveTopics[topic].push(item);
+  if (liveTopics[topic].length > 500) liveTopics[topic].splice(0, liveTopics[topic].length - 500);
   io.emit('live-transcript-update', { topics: liveTopics });
   return item;
 }
 
 io.on('connection', (socket) => {
   socket.emit('live-transcript-update', { topics: liveTopics });
+  socket.emit('speaker-settings-update', { speakers: speakerSettings });
   socket.on('transcript', (data = {}) => addLiveTranscript(data.topic, data.text, data.speaker));
 });
 
-async function transcribeWithDeepgram(audioData, mimeType = 'audio/webm') {
-  if (!deepgram) return { success: false, provider: 'deepgram', error: 'DEEPGRAM_API_KEY is not configured.' };
-  const rawAudio = String(audioData).replace(/^data:[^;]+;base64,/, '');
-  if (!rawAudio || !/^[A-Za-z0-9+/=]+$/.test(rawAudio)) return { success: false, provider: 'deepgram', error: 'Invalid base64 audio data.' };
+function parseAudioPayload(audio, mimeType) {
+  if (typeof audio !== 'string' || !audio.trim()) {
+    return { error: 'audio data is required' };
+  }
+
+  let rawAudio = audio.trim();
+  if (rawAudio.startsWith('data:')) {
+    const commaIndex = rawAudio.indexOf(',');
+    const header = commaIndex >= 0 ? rawAudio.slice(0, commaIndex) : '';
+    if (!header.startsWith('data:audio/') || !header.endsWith(';base64')) {
+      return { error: 'Audio must be provided as a base64 audio data URI.' };
+    }
+    rawAudio = rawAudio.slice(commaIndex + 1);
+  }
+
+  const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+  if (!rawAudio || !base64Pattern.test(rawAudio)) {
+    return { error: 'Invalid base64 audio data.' };
+  }
+
+  const normalizedMimeType = typeof mimeType === 'string'
+    ? mimeType.split(';', 1)[0].trim().toLowerCase()
+    : 'audio/webm';
+  if (!/^audio\/[a-z0-9.+-]+$/.test(normalizedMimeType)) {
+    return { error: 'A valid audio MIME type is required.' };
+  }
+
+  const buffer = Buffer.from(rawAudio, 'base64');
+  if (!buffer.length) return { error: 'Audio data is empty.' };
+  return { buffer, mimeType: normalizedMimeType };
+}
+
+async function transcribeWithDeepgram(buffer, mimeType) {
   try {
-    const buffer = Buffer.from(rawAudio, 'base64');
     const response = await deepgram.listen.prerecorded.transcribeFile(buffer, { model: process.env.DEEPGRAM_MODEL || 'nova-3', smart_format: true, diarize: true, punctuate: true, utterances: true, language: 'en-US', mimeType });
     const result = response?.result || response;
     const alternative = result?.results?.channels?.[0]?.alternatives?.[0] || {};
@@ -96,16 +202,38 @@ async function transcribeWithDeepgram(audioData, mimeType = 'audio/webm') {
 
 app.post('/api/transcribe', async (req, res) => {
   const { audio, mimeType = 'audio/webm', topic = 'Overview', speaker = 'Unknown speaker' } = req.body || {};
-  if (!audio) return res.status(400).json({ success: false, error: 'audio data is required' });
-  const result = await transcribeWithDeepgram(audio, mimeType);
+  const parsedAudio = parseAudioPayload(audio, mimeType);
+  if (parsedAudio.error) return res.status(400).json({ success: false, error: parsedAudio.error });
+  if (!liveTopics[topic]) return res.status(400).json({ success: false, error: 'topic is not supported' });
+  if (!deepgram) {
+    return res.status(503).json({
+      success: false,
+      provider: 'deepgram',
+      error: 'DEEPGRAM_API_KEY is not configured.',
+    });
+  }
+  const result = await transcribeWithDeepgram(parsedAudio.buffer, parsedAudio.mimeType);
   if (result.success && result.text) addLiveTranscript(topic, result.text, speaker);
-  res.status(result.success ? 200 : 503).json(result);
+  res.status(result.success ? 200 : 502).json(result);
 });
 
 app.post('/api/refine-speech', async (req, res) => {
   const text = normalizeText(req.body?.rawText);
   if (!text) return res.status(400).json({ success: false, error: 'rawText is required' });
-  res.json({ success: true, data: await refineSpeech(text) });
+  if (text.length > 25000) {
+    return res.status(413).json({ success: false, error: 'rawText must be 25,000 characters or fewer.' });
+  }
+  const topic = req.body?.topic || 'Overview';
+  if (!liveTopics[topic]) return res.status(400).json({ success: false, error: 'topic is not supported' });
+
+  try {
+    const data = await refineSpeech(text);
+    const note = normalizeText(`${data.title}: ${data.summary}`).slice(0, 1000);
+    const summaryEntry = addLiveTranscript(topic, note, 'Aetherist AI');
+    return res.json({ success: true, data, topic, summaryEntry });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || 'Speech refinement failed.' });
+  }
 });
 
 function writeTopicsToPdf(doc, topics) {
@@ -125,13 +253,43 @@ function writeTopicsToPdf(doc, topics) {
 
 app.post('/api/export-pdf', (req, res) => {
   try {
-    const topics = req.body?.topics && typeof req.body.topics === 'object' ? req.body.topics : liveTopics;
+    const requestedTopics = req.body?.topics;
+    if (
+      requestedTopics !== undefined &&
+      (!requestedTopics || typeof requestedTopics !== 'object' || Array.isArray(requestedTopics))
+    ) {
+      return res.status(400).json({ success: false, error: 'topics must be an object of topic names and note arrays.' });
+    }
+    const topics = requestedTopics || liveTopics;
     const doc = new jsPDF();
     doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text(req.body?.title || 'AETHERIST AI - MEETING MINUTES', 14, 20);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 28); doc.line(14, 32, 196, 32);
     writeTopicsToPdf(doc, topics);
     res.json({ success: true, pdfData: doc.output('datauristring') });
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
+if (serveBuiltApp) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    return res.sendFile(path.join(buildDirectory, 'index.html'), (error) => {
+      if (error) next(error);
+    });
+  });
+}
+
+app.use((_req, res) => {
+  res.status(404).json({ success: false, error: 'API route not found.' });
+});
+
+app.use((error, _req, res, _next) => {
+  const status = error.status === 413 ? 413 : error.status || 500;
+  const message = status === 413
+    ? 'Request body is too large.'
+    : status === 400
+      ? 'Request body must contain valid JSON.'
+      : 'Unexpected server error.';
+  res.status(status).json({ success: false, error: message });
 });
 
 function startServer(port = process.env.PORT || 5000) {
