@@ -3,16 +3,38 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { jsPDF } from 'jspdf';
+import { DeepgramClient } from '@deepgram/sdk';
 import dotenv from 'dotenv';
+<<<<<<< HEAD
+=======
 import { createClient } from '@deepgram/sdk';
 import OpenAI from 'openai';
 import path from 'path';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 
+>>>>>>> 5cc9afccabf8701f3c9e60b9fb68d5c90344e393
 dotenv.config();
-
 const app = express();
+<<<<<<< HEAD
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.get('/', (req, res) => res.send('<h1>Active</h1>'));
+const httpServer = createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
+const deepgram = new DeepgramClient(process.env.DEEPGRAM_API_KEY);
+let liveTopics = { Overview: [], Technical: [], Minutes: [] };
+app.get('/api/session', (req, res) => res.json({ topics: liveTopics }));
+io.on('connection', async (socket) => {
+  console.log('📱 Phone Client linked to pipeline.');
+  let dgLive = deepgram.listen.live({ model: 'nova-2', language: 'en-US', smart_format: true });
+  dgLive.on('transcript', (data) => {
+    const text = data.channel?.alternatives?.[0]?.transcript;
+    if (text && text.trim().length > 0) {
+      let tab = text.toLowerCase().includes('technical') ? 'Technical' : text.toLowerCase().includes('action') ? 'Minutes' : 'Overview';
+      liveTopics[tab].push({ speaker: 'User', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), text });
+      io.emit('live-transcript-update', { topics: liveTopics });
+=======
 const httpServer = createServer(app);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildDirectory = path.join(projectRoot, 'dist');
@@ -246,13 +268,25 @@ function writeTopicsToPdf(doc, topics) {
     for (const item of items) {
       const lines = doc.splitTextToSize(`${item?.speaker || 'Unknown speaker'} (${item?.time || ''}): ${item?.text || ''}`, 180);
       pageBreak(lines.length * 5 + 3); doc.text(lines, 14, y); y += lines.length * 5 + 3;
+>>>>>>> 5cc9afccabf8701f3c9e60b9fb68d5c90344e393
     }
-    y += 4;
-  }
-}
-
+  });
+  socket.on('audio-stream-chunk', (d) => { if(dgLive) dgLive.send(d.blob); });
+  socket.on('disconnect', () => { if(dgLive) dgLive.finish(); });
+});
 app.post('/api/export-pdf', (req, res) => {
   try {
+<<<<<<< HEAD
+    const doc = new jsPDF();
+    doc.setFont('helvetica', 'bold'); doc.text('AETHERIST AI REPORT', 14, 20);
+    let y = 36;
+    Object.keys(liveTopics).forEach(t => {
+      doc.text(t, 14, y); y += 10;
+      liveTopics[t].forEach(i => { doc.text(`${i.speaker}: ${i.text}`, 14, y); y += 8; });
+    });
+    res.json({ success: true, pdfData: doc.output('datauristring') });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+=======
     const requestedTopics = req.body?.topics;
     if (
       requestedTopics !== undefined &&
@@ -290,10 +324,7 @@ app.use((error, _req, res, _next) => {
       ? 'Request body must contain valid JSON.'
       : 'Unexpected server error.';
   res.status(status).json({ success: false, error: message });
+>>>>>>> 5cc9afccabf8701f3c9e60b9fb68d5c90344e393
 });
-
-function startServer(port = process.env.PORT || 5000) {
-  return httpServer.listen(port, () => console.log(`Aetherist Backend Core live on http://localhost:${port}`));
-}
-
-export { app, httpServer, io, liveTopics, addLiveTranscript, startServer, refineSpeech };
+const PORT = process.env.PORT || 5000;
+httpServer.listen(PORT, () => console.log('✨ Server Active on Port 5000'));
