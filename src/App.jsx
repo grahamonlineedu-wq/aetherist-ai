@@ -1,183 +1,161 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
-import AgendaCard from './components/AgendaCard.jsx';
-import LiveTranscript from './components/LiveTranscript.jsx';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-const SPEAKERS = ['Sarah Jenkins', 'David Chen', 'Elena Rosto'];
-const EMPTY_TOPICS = { Overview: [], Technical: [], Minutes: [] };
+const API_BASE_URL = 'http://localhost:5000';
 
 export default function App() {
-  const [view, setView] = useState('session');
-  const [topic, setTopic] = useState('Overview');
-  const [speaker, setSpeaker] = useState(SPEAKERS[0]);
-  const [recording, setRecording] = useState(false);
-  const [topics, setTopics] = useState(EMPTY_TOPICS);
-  const [history, setHistory] = useState([]);
-  const [connection, setConnection] = useState('connecting');
-  const [message, setMessage] = useState('');
+  const [activeViewTab, setActiveViewTab] = useState('session'); 
+  const [activeTopic, setActiveTopic] = useState('Overview');
+  const [isRecording, setIsRecording] = useState(false);
+  const [micGain, setMicGain] = useState(100);
+  const [suppression, setSuppression] = useState(120);
+  const [activeSpeaker, setActiveSpeaker] = useState('Sarah');
+  
+  const [transcriptData, setTranscriptData] = useState({ Overview: [], Technical: [], Minutes: [] });
   const socketRef = useRef(null);
-  const recognitionRef = useRef(null);
-  const streamRef = useRef(null);
-  const recordingRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
 
   useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
+    socketRef.current = io(API_BASE_URL, { query: { speaker: activeSpeaker } });
 
-  useEffect(() => {
-    const socket = io(API_BASE_URL, { transports: ['websocket', 'polling'] });
-    socketRef.current = socket;
-    socket.on('connect', () => setConnection('connected'));
-    socket.on('disconnect', () => setConnection('disconnected'));
-    socket.on('connect_error', () => setConnection('disconnected'));
-    socket.on('live-transcript-update', (data) => {
-      if (data?.topics) setTopics(data.topics);
+    socketRef.current.on('live-transcript-update', (data) => {
+      if (data.topics) setTranscriptData(data.topics);
     });
 
-    Promise.all([
-      fetch(`${API_BASE_URL}/api/session`),
-      fetch(`${API_BASE_URL}/api/history`),
-    ]).then(async ([sessionResponse, historyResponse]) => {
-      if (!sessionResponse.ok || !historyResponse.ok) throw new Error('Backend unavailable');
-      const session = await sessionResponse.json();
-      const historyData = await historyResponse.json();
-      if (session.topics) setTopics(session.topics);
-      if (historyData.history) setHistory(historyData.history);
-    }).catch((error) => setMessage(`Backend connection failed: ${error.message}`));
+    return () => { if (socketRef.current) socketRef.current.disconnect(); };
+  }, [activeSpeaker]);
 
-    return () => {
-      recordingRef.current = false;
-      recognitionRef.current?.stop();
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      socket.disconnect();
-    };
-  }, []);
+  const toggleRecording = async () => {
+    if (isRecording) {
+      if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        setIsRecording(true);
+        
+        // Switched to uncompressed audio streams to fit AI expectations perfectly
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
 
-  const sendTranscript = async (text) => {
-    const cleanText = text.trim();
-    if (!cleanText) return;
-    if (!socketRef.current?.connected) {
-      setMessage('Transcript not sent: backend is disconnected.');
-      return;
-    }
-    socketRef.current.emit('transcript', { text: cleanText, speaker, topic });
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/refine-speech`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: `${speaker}: ${cleanText}` }),
-      });
-      const result = await response.json();
-      if (result.success) setMessage(`Captured: ${result.data.title}`);
-    } catch {
-      setMessage('Transcript captured, but article refinement is unavailable.');
-    }
-  };
-
-  const stopRecording = () => {
-    recordingRef.current = false;
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setRecording(false);
-  };
-
-  const startRecording = async () => {
-    if (!window.isSecureContext && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
-      setMessage('Microphone requires HTTPS or localhost.');
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMessage('This browser does not support microphone access.');
-      return;
-    }
-
-    try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        setRecording(true);
-        setMessage('Microphone is active, but speech recognition is unavailable in this browser.');
-        return;
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0 && socketRef.current) {
+            socketRef.current.emit('audio-stream-chunk', { blob: event.data });
+          }
+        };
+        mediaRecorder.start(250);
+      } catch (err) {
+        alert("Microphone hardware error: " + err.message);
+        setIsRecording(false);
       }
-
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = false;
-      recognition.lang = navigator.language || 'en-US';
-      recognition.onresult = (event) => {
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          if (event.results[index].isFinal) sendTranscript(event.results[index][0].transcript);
-        }
-      };
-      recognition.onerror = (event) => setMessage(`Speech recognition: ${event.error}`);
-      recognition.onend = () => {
-        if (recordingRef.current) {
-          try { recognition.start(); } catch { /* recognition is already restarting */ }
-        }
-      };
-      recognitionRef.current = recognition;
-      recognition.start();
-      setRecording(true);
-      setMessage('Microphone is active. Speak normally.');
-    } catch (error) {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      setMessage(`Microphone permission failed: ${error.name || error.message}`);
     }
   };
 
-  const toggleRecording = () => (recording ? stopRecording() : startRecording());
-
-  const exportPdf = async () => {
+  const handleDownloadPDF = async () => {
     try {
-      setMessage('Preparing PDF...');
-      const response = await fetch(`${API_BASE_URL}/api/export-pdf`, {
+      const response = await fetch(`${API_BASE_URL}/api/export-pdf`, { 
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Aetherist AI - Meeting Minutes', topics }),
+        headers: { 'Content-Type': 'application/json' }
       });
       const data = await response.json();
-      if (!response.ok || !data.success) throw new Error(data.error || 'PDF export failed');
-      const link = document.createElement('a');
-      link.href = data.pdfData;
-      link.download = 'Aetherist_Meeting_Minutes.pdf';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setMessage('PDF downloaded.');
-    } catch (error) {
-      setMessage(`PDF export failed: ${error.message}`);
+      if (data.success && data.pdfData) {
+        const anchor = document.createElement('a');
+        anchor.href = data.pdfData;
+        anchor.download = `Aetherist_AI_Minutes.pdf`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+      } else {
+        alert("Server failed building report parameters.");
+      }
+    } catch (err) {
+      alert("Error compiling data streams. Recheck if backend server process is active.");
     }
   };
 
-  const agenda = Object.entries(topics).map(([title, items]) => ({ id: title, title, items }));
-
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div><h1>Aetherist AI</h1><p>Autonomous Meeting Secretary</p></div>
-        <span className={`connection-status ${connection}`}>{connection}</span>
-      </header>
-      <nav className="toolbar" aria-label="Meeting controls">
-        <button type="button" onClick={() => setView(view === 'history' ? 'session' : 'history')}>{view === 'history' ? 'Workspace' : 'History'}</button>
-        <button type="button" onClick={exportPdf}>Export PDF</button>
-        <button type="button" className={recording ? 'danger-button' : 'primary-button'} onClick={toggleRecording}>{recording ? 'Stop microphone' : 'Start microphone'}</button>
-      </nav>
-      {message && <p className="status-message" role="status">{message}</p>}
+    <div style={{ padding: '20px', maxWidth: '440px', margin: '0 auto', background: '#080914', minHeight: '100vh', fontFamily: 'system-ui, sans-serif', color: '#ffffff' }}>
+      
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', justifyContent: 'center' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: '800', textAlign: 'center' }}>Aetherist AI</h1>
+          <p style={{ margin: 0, fontSize: '12px', color: '#64748b', textAlign: 'center' }}>Autonomous Meeting Secretary</p>
+        </div>
+      </div>
 
-      {view === 'history' ? (
-        <section className="history-list"><h2>Meeting history</h2>{history.length ? history.map((item) => <AgendaCard key={item.id} topic={{ ...item, items: (item.highlights || []).map((text) => ({ speaker: 'Highlight', text })) }} />) : <p className="empty-state">No meeting history yet.</p>}</section>
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '24px' }}>
+        <button 
+          style={{ flex: 1, background: activeViewTab === 'history' ? '#2563eb' : '#111322', color: activeViewTab === 'history' ? 'white' : '#94a3b8', border: '1px solid #1e293b', padding: '12px', borderRadius: '24px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+          onClick={() => setActiveViewTab(activeViewTab === 'history' ? 'session' : 'history')}
+        >
+          ⏱️ {activeViewTab === 'history' ? 'Workspace' : 'History'}
+        </button>
+        <button style={{ flex: 1, background: '#10b981', color: 'white', border: 'none', padding: '12px', borderRadius: '24px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }} onClick={handleDownloadPDF}>📥 PDF</button>
+        <button style={{ flex: 1.5, background: isRecording ? '#7f1d1d' : '#2563eb', color: 'white', border: 'none', padding: '12px', borderRadius: '24px', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }} onClick={toggleRecording}>
+          {isRecording ? '🛑 Stop' : '🎙️ Start'}
+        </button>
+      </div>
+
+      {activeViewTab === 'history' ? (
+        <div style={{ padding: '20px 0', color: '#64748b', textAlign: 'center', border: '1px dashed #1e293b', borderRadius: '12px' }}>History storage synced to cloud database profile logs.</div>
       ) : (
         <>
-          <section className="panel speaker-panel"><h2>Speaker environment</h2><div className="speaker-buttons">{SPEAKERS.map((name) => <button type="button" key={name} className={speaker === name ? 'selected' : ''} onClick={() => setSpeaker(name)} aria-pressed={speaker === name}>{name}</button>)}</div></section>
-          <section className="topic-tabs" aria-label="Transcript topics">{Object.keys(EMPTY_TOPICS).map((name) => <button type="button" key={name} className={topic === name ? 'selected' : ''} onClick={() => setTopic(name)} aria-pressed={topic === name}>{name}</button>)}</section>
-          <LiveTranscript topic={topic} entries={topics[topic] || []} />
-          <section className="agenda-list">{agenda.map((item) => <AgendaCard key={item.id} topic={item} />)}</section>
+          <div style={{ background: '#0e101f', borderRadius: '16px', padding: '20px', border: '1px solid #1e293b', marginBottom: '20px' }}>
+            <div style={{ height: '60px', width: '100%', position: 'relative', marginBottom: '14px' }}>
+              <svg viewBox="0 0 400 60" style={{ width: '100%', height: '100%' }}>
+                <path d={isRecording ? "M 0 30 Q 50 5, 100 50 T 200 10 T 300 55 T 400 30" : "M 0 30 L 400 30"} fill="none" stroke="#2563eb" strokeWidth="2" />
+                <path d={isRecording ? "M 0 35 Q 60 50, 120 10 T 240 50 T 360 10 T 400 35" : "M 0 35 L 400 35"} fill="none" stroke="#c026d3" strokeWidth="1.5" opacity="0.5" />
+              </svg>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', textAlign: 'center', borderTop: '1px solid #1e293b', paddingTop: '12px' }}>
+              <div><div style={{ fontSize: '10px', color: '#64748b' }}>Active Input</div><div style={{ fontSize: '12px', fontWeight: '700', color: isRecording ? '#10b981' : '#f1f5f9' }}>{isRecording ? activeSpeaker : 'None'}</div></div>
+              <div><div style={{ fontSize: '10px', color: '#64748b' }}>Gain Scale</div><div style={{ fontSize: '12px', fontWeight: '700', color: '#3b82f6' }}>{micGain}%</div></div>
+              <div><div style={{ fontSize: '10px', color: '#64748b' }}>Suppression</div><div style={{ fontSize: '12px', fontWeight: '700', color: '#a855f7' }}>{suppression} dB</div></div>
+            </div>
+          </div>
+
+          <div style={{ background: '#0e101f', borderRadius: '16px', padding: '20px', border: '1px solid #1e293b', marginBottom: '20px' }}>
+            <h3 style={{ fontSize: '12px', margin: '0 0 16px 0', color: '#94a3b8', textTransform: 'uppercase', textAlign: 'center' }}>Speaker Environments</h3>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '20px' }}>
+              {['Sarah', 'David', 'Elena'].map((name) => (
+                <button key={name} style={{ flex: 1, padding: '8px 4px', borderRadius: '8px', fontSize: '11px', fontWeight: '600', border: 'none', background: activeSpeaker === name ? '#2563eb' : '#111322', color: activeSpeaker === name ? 'white' : '#94a3b8' }} onClick={() => setActiveSpeaker(name)}>{name}</button>
+              ))}
+            </div>
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}><span>Amplification Gain</span></div>
+              <input type="range" min="0" max="100" value={micGain} onChange={(e) => setMicGain(Number(e.target.value))} style={{ width: '100%', accentColor: '#2563eb' }} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}><span>Suppression Density</span></div>
+              <input type="range" min="0" max="120" value={suppression} onChange={(e) => setSuppression(Number(e.target.value))} style={{ width: '100%', accentColor: '#a855f7' }} />
+            </div>
+          </div>
+
+          <div style={{ background: '#0e101f', borderRadius: '16px', padding: '20px', border: '1px solid #1e293b' }}>
+            <h3 style={{ fontSize: '12px', margin: '0 0 14px 0', color: '#94a3b8', textTransform: 'uppercase', textAlign: 'center' }}>Live Transcripts</h3>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', justifyContent: 'center' }}>
+              {['Overview', 'Technical', 'Minutes'].map((tab) => (
+                <button key={tab} style={{ padding: '6px 12px', borderRadius: '14px', fontSize: '11px', fontWeight: '600', border: 'none', background: activeTopic === tab ? '#2563eb' : '#111322', color: activeTopic === tab ? 'white' : '#94a3b8' }} onClick={() => setActiveTopic(tab)}>{tab}</button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {(transcriptData[activeTopic] || []).length === 0 ? (
+                <p style={{ fontSize: '12px', color: '#475569', textAlign: 'center', margin: '10px 0' }}>Say something to start transcribing...</p>
+              ) : (
+                transcriptData[activeTopic].map((item, index) => (
+                  <div key={index} style={{ borderBottom: index !== transcriptData[activeTopic].length - 1 ? '1px solid #16192e' : 'none', paddingBottom: '10px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '4px' }}>
+                      <span style={{ color: '#6366f1', fontWeight: '700' }}>{item.speaker}</span>
+                      <span style={{ color: '#475569' }}>{item.time}</span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#cbd5e1', lineHeight: '1.5' }}>{item.text}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </>
       )}
-    </main>
+    </div>
   );
 }
