@@ -1,23 +1,28 @@
 {
-  "name": "aetherist-frontend",
-  "private": true,
+  "name": "aetherist-ai",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host",
-    "dev:api": "node server/start.js",
-    "start": "node server/start.js",
+    "dev": "vite",
     "build": "vite build",
-    "test": "node --test tests/*.test.js"
+    "preview": "vite preview",
+    "server": "cd server && npm run dev",
+    "dev:all": "concurrently \"npm run server\" \"npm run dev\""
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.1",
+    "lucide-react": "^0.446.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "socket.io-client": "^4.8.3"
+    "react-hot-toast": "^2.4.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^6.1.2",
-    "vite": "^8.3.5"
+    "@vitejs/plugin-react": "^4.3.2",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "vite": "^5.4.8"
   }
 }

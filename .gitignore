@@ -3,4 +3,11 @@ node_modules/
 dist/
 .vite/
 *.local
+<<<<<<< HEAD
 .env
+=======
+server/.env
+*.pid
+pgdata/
+node_modules/
+>>>>>>> fix/netlify-config
