@@ -7,7 +7,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "cd server && npm run dev",
-    "dev:all": "concurrently \"npm run server\" \"npm run dev\""
+    "db": "pg_ctl -D ~/pgdata start",
+    "dev:all": "concurrently \"npm run server\" \"npm run dev\" \"npm run db\"",
+    "start": "cd server && node server.js"
   },
   "dependencies": {
     "html2canvas": "^1.4.1",
