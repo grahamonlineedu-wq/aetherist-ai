@@ -6,5 +6,4 @@ dist/
 *.pid
 pgdata/
 server/.env
-.DS_Storeo
-
+.DS_Store
