@@ -3,3 +3,7 @@ node_modules/
 dist/
 .vite/
 *.local
+server/.env
+*.pid
+pgdata/
+node_modules/
