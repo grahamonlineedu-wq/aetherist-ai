@@ -4,15 +4,13 @@ const { Pool } = require('pg')
 require('dotenv').config()
 
 const app = express()
+const port = process.env.PORT || 5000  // <-- ADD THIS LINE
 
-app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://aetherist-ai.netlify.app'
-  ],
-  credentials: true
-}))
+// ... your middleware, routes, DB code ...
+
+app.listen(port, '0.0.0.0', () => {  // <-- Use the 'port' variable here
+  console.log(`🚀 Aetherist backend running on :${port}`)
+})
 
 app.use(express.json({ limit: '10mb' }))
 
