@@ -1,12 +1,10 @@
-express = require('express')
-const cors = require('cors') const { Pool } =
-require('pg') require('dotenv').config()
-# Commit and push
-git add server/server.js server/package.jsonconst app =
-express() const port = process.env.PORT || 10000 git
-commit -m "fix: add health route, CORS, and DB migration
-for share_id"
-git push origin main// CORS for Netlify + Local dev
+const express = require('express')
+const cors = require('cors')
+const { Pool } = require('pg')
+require('dotenv').config()
+
+const app = express()
+
 app.use(cors({
   origin: [
     'http://localhost:5173',
