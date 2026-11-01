@@ -12,8 +12,8 @@ dotenv.config()
 
 const app = express()
 const httpServer = createServer(app)
-const io = new Server(httpServer, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
+const io = new Server(httpServer, { 
+  cors: { origin: '*', methods: ['GET', 'POST'] } 
 })
 
 const deepgram = process.env.DEEPGRAM_API_KEY ? new DeepgramClient(process.env.DEEPGRAM_API_KEY) : null
@@ -75,18 +75,18 @@ async function initDB() {
   }
 }
 
-async function normalizeText(value) {
+function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
 function fallbackSummary(rawText) {
   const text = normalizeText(rawText)
   if (!text) return { title: 'No transcript available', keywords: [], summary: '', refinedSpeech: '' }
-
+  
   const keywords = [...new Set(text.split(' ').filter((word) => word.length > 3)
     .map((word) => word.replace(/[^a-zA-Z0-9]/g, ''))
     .filter(Boolean))].slice(0, 8)
-
+  
   return {
     title: text.slice(0, 52) || 'Meeting Summary',
     keywords: keywords.length ? keywords : ['meeting', 'discussion'],
@@ -98,7 +98,7 @@ function fallbackSummary(rawText) {
 async function refineSpeech(rawText) {
   const text = normalizeText(rawText)
   if (!text || !openai) return fallbackSummary(text)
-
+  
   try {
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -108,7 +108,7 @@ async function refineSpeech(rawText) {
       ],
       response_format: { type: 'json_object' }
     })
-
+    
     const parsed = JSON.parse(response.choices[0].message.content)
     return {
       title: parsed.title || 'Meeting Notes',
@@ -126,13 +126,13 @@ function addLiveTranscript(tab, text, speaker = 'System') {
   const topic = liveTopics[tab] ? tab : 'Overview'
   const cleanText = normalizeText(text)
   if (!cleanText) return null
-
+  
   const item = {
     speaker: String(speaker || 'Unknown speaker'),
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     text: cleanText
   }
-
+  
   liveTopics[topic].push(item)
   io.emit('live-transcript-update', { topics: liveTopics })
   return item
@@ -142,11 +142,11 @@ async function transcribeWithDeepgram(audioData, mimeType = 'audio/webm') {
   if (!deepgram) {
     return { success: false, provider: 'fallback', error: 'DEEPGRAM_API_KEY not set' }
   }
-
+  
   try {
     const rawAudio = String(audioData).replace(/^data:[^;]+;base64,[STRIPPED], '')
     const buffer = Buffer.from(rawAudio, 'base64')
-
+    
     const response = await deepgram.listen.prerecorded.transcribeFile(buffer, {
       model: 'nova-3',
       smart_format: true,
@@ -156,7 +156,7 @@ async function transcribeWithDeepgram(audioData, mimeType = 'audio/webm') {
       utterances: true,
       mimeType
     })
-
+    
     const result = response?.result || response
     const text = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript
     return { success: true, provider: 'deepgram', text: text || '' }
@@ -175,7 +175,7 @@ function writeTopicsToPdf(doc, topics) {
       y = 20
     }
   }
-
+  
   for (const [title, rawItems] of Object.entries(topics)) {
     const items = Array.isArray(rawItems) ? rawItems : []
     pageBreak(12)
@@ -183,10 +183,10 @@ function writeTopicsToPdf(doc, topics) {
     doc.setFontSize(13)
     doc.text(`Topic: ${String(title)}`, 14, y)
     y += 8
-
+    
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(10)
-
+    
     for (const item of items) {
       const lines = doc.splitTextToSize(`${item?.speaker || 'Unknown'} [${item?.time || ''}]: ${item?.text || ''}`, 180)
       pageBreak(lines.length * 5 + 3)
@@ -198,17 +198,17 @@ function writeTopicsToPdf(doc, topics) {
 }
 
 app.get('/', (req, res) => {
-  res.json({
-    name: 'Aetherist AI Backend API',
-    status: 'running',
+  res.json({ 
+    name: 'Aetherist AI Backend API', 
+    status: 'running', 
     version: '1.0.0',
     time: new Date().toISOString()
   })
 })
 
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
+  res.json({ 
+    status: 'ok', 
     database: pool ? 'connected' : 'disabled',
     deepgram: deepgram ? 'enabled' : 'disabled',
     openai: openai ? 'enabled' : 'disabled'
@@ -223,7 +223,7 @@ app.post('/api/transcribe', async (req, res) => {
 app.post('/api/refine-speech', async (req, res) => {
   const text = normalizeText(req.body?.rawText)
   if (!text) return res.status(400).json({ success: false, error: 'rawText required' })
-
+  
   const data = await refineSpeech(text)
   res.json({ success: true, data })
 })
@@ -252,7 +252,6 @@ app.post('/api/export-speaker-pdf', (req, res) => {
     const topics = req.body?.topics && typeof req.body.topics === 'object' ? req.body.topics : {}
     const requested = Array.isArray(req.body?.speakers) ? req.body.speakers : []
     const speakers = [...new Set(requested.length ? requested : Object.values(topics).flat().map(i => i.speaker).filter(Boolean))]
-
     const reports = speakers.map((speaker) => {
       const doc = new jsPDF()
       doc.setFont('helvetica', 'bold')
